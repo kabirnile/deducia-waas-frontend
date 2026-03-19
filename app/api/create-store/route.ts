@@ -29,7 +29,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "Master Server Authentication Failed." }, { status: 401 });
     }
 
-    // 2. CHECK DATABASE: Duplicate Email Prevention
+    // 2. CHECK DATABASE
     const existingUsers: any = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'res.users', 'search', [[['login', '=', userEmail]]]], (error: any, value: any) => {
         if (error) reject(error);
@@ -38,10 +38,10 @@ export async function POST(req: Request) {
     });
 
     if (existingUsers && existingUsers.length > 0) {
-      return NextResponse.json({ success: false, error: "This email is already registered to a store." }, { status: 400 });
+      return NextResponse.json({ success: false, error: "This email is already registered." }, { status: 400 });
     }
 
-    // 3. ISOLATION: Create a Private Company for the User
+    // 3. ISOLATION: Create a Private Company
     const companyId = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'res.company', 'create', [{
         'name': storeName,
@@ -51,61 +51,64 @@ export async function POST(req: Request) {
       });
     });
 
-    // 4. Create the Website and Lock it to the new Company
+    // 4. Create the Website (Forced Default Theme & Secure HTTPS Domain)
     const websiteId = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'website', 'create', [{
         'name': storeName,
-        'domain': `${subDomain}.deducia.com`,
-        'company_id': companyId
+        'domain': `https://${subDomain}.deducia.com`,
+        'company_id': companyId,
+        'theme_id': 1 // <--- Bypasses the configurator crash
       }]], (error: any, value: any) => {
         if (error) reject(error);
         resolve(value);
       });
     });
 
-    // 5. PERMISSIONS: Helper function to get correct Odoo Group IDs
+    // 5. PERMISSIONS (Wrapped in safety net so it never crashes Vercel)
     const getGroupId = async (moduleName: string, xmlId: string) => {
-      const result: any = await new Promise((resolve, reject) => {
-        models.methodCall('execute_kw', [db, uid, password, 'ir.model.data', 'search_read',
-          [[['module', '=', moduleName], ['name', '=', xmlId]]],
-          {'fields': ['res_id']}
-        ], (error: any, value: any) => {
-          if (error) reject(error);
-          resolve(value);
+      try {
+        const result: any = await new Promise((resolve, reject) => {
+          models.methodCall('execute_kw', [db, uid, password, 'ir.model.data', 'search_read',
+            [[['module', '=', moduleName], ['name', '=', xmlId]]],
+            {'fields': ['res_id']}
+          ], (error: any, value: any) => {
+            if (error) reject(error);
+            resolve(value);
+          });
         });
-      });
-      return result && result.length > 0 ? result[0].res_id : null;
+        return result && result.length > 0 ? result[0].res_id : null;
+      } catch (e) {
+        return null;
+      }
     };
 
-    // Fetch Internal User, Website Designer, and Sales Admin rights
     const groupUserId = await getGroupId('base', 'group_user');
     const groupWebsiteDesignerId = await getGroupId('website', 'group_website_designer');
-    const groupSalesManagerId = await getGroupId('sales_team', 'group_sale_manager');
-    const groupIds = [groupUserId, groupWebsiteDesignerId, groupSalesManagerId].filter(Boolean);
+    const groupIds = [groupUserId, groupWebsiteDesignerId].filter(Boolean);
 
-    // 6. Create the User, assign Permissions, and Lock to Company
+    // 6. Create the User Account
     const newUserId = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'res.users', 'create', [{
         'name': `${storeName} Admin`,
         'login': userEmail,
         'password': userPassword,
         'company_id': companyId,
-        'company_ids': [[6, 0, [companyId]]], // User can ONLY see this company
-        'groups_id': [[6, 0, groupIds]] // Grants editing rights
+        'company_ids': [[6, 0, [companyId]]],
+        'groups_id': [[6, 0, groupIds]]
       }]], (error: any, value: any) => {
         if (error) reject(error);
         resolve(value);
       });
     });
 
-    // 7. Success Redirect to the Configurator Wizard
+    // 7. Success Redirect (Sends user straight to their website frontend to start dragging and dropping)
     return NextResponse.json({ 
       success: true, 
-      redirectUrl: `https://${subDomain}.deducia.com/web/login?redirect=/website/configurator` 
+      redirectUrl: `https://${subDomain}.deducia.com/web/login?redirect=/` 
     });
 
   } catch (error: any) {
     console.error("Deducia Bridge Error:", error);
-    return NextResponse.json({ success: false, error: "An unexpected error occurred." }, { status: 500 });
+    return NextResponse.json({ success: false, error: "Server Timeout. Please try again." }, { status: 500 });
   }
 }
