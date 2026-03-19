@@ -3,62 +3,69 @@ const xmlrpc = require('xmlrpc');
 
 export async function POST(req: Request) {
   try {
-    const { storeName, subDomain } = await req.json();
+    const { storeName, subDomain, userEmail, userPassword } = await req.json();
 
-    // 2. Validate Environment Variables (Matching your Vercel screenshot!)
     const url = process.env.ODOO_URL;
     const db = process.env.ODOO_DB;
-    const username = process.env.ODOO_ADMIN_EMAIL;      // <-- Updated
-    const password = process.env.ODOO_ADMIN_PASSWORD;   // <-- Updated
+    const username = process.env.ODOO_ADMIN_EMAIL;      
+    const password = process.env.ODOO_ADMIN_PASSWORD;   
 
     if (!url || !db || !username || !password) {
-      console.error("CRITICAL: Missing Vercel Environment Variables", { url, db, hasUser: !!username, hasPass: !!password });
       return NextResponse.json({ success: false, error: "Server Configuration Error" }, { status: 500 });
     }
 
-    // 3. Setup XML-RPC Clients
     const common = xmlrpc.createSecureClient(`${url}/xmlrpc/2/common`);
     const models = xmlrpc.createSecureClient(`${url}/xmlrpc/2/object`);
 
-    // 4. STEP 1: Authenticate with the Odoo Master Server
+    // 1. Master Authentication
     const uid = await new Promise((resolve, reject) => {
       common.methodCall('authenticate', [db, username, password, {}], (error: any, value: any) => {
-        if (error) {
-          console.error("Auth Error:", error);
-          reject(error);
-        }
+        if (error) reject(error);
         resolve(value);
       });
     });
 
     if (!uid || typeof uid !== 'number') {
-      console.error("Authentication failed: UID is invalid");
-      return NextResponse.json({ success: false, error: "Master Server Authentication Failed. Check Email/Password." }, { status: 401 });
+      return NextResponse.json({ success: false, error: "Master Server Authentication Failed. Check Vercel Password." }, { status: 401 });
     }
 
-    // 5. STEP 2: Create the Website Record for the User
-    const websiteId = await new Promise((resolve, reject) => {
-      models.methodCall('execute_kw', [
-        db,
-        uid,
-        password,
-        'website',
-        'create',
-        [{
-          'name': storeName,
-          'domain': `${subDomain}.deducia.com`,
-          'theme_id': 1, 
-        }]
-      ], (error: any, value: any) => {
-        if (error) {
-          console.error("Website Creation Error:", error);
-          reject(error);
-        }
+    // 2. CHECK DATABASE: Does the customer email already exist?
+    const existingUsers: any = await new Promise((resolve, reject) => {
+      models.methodCall('execute_kw', [db, uid, password, 'res.users', 'search', [[['login', '=', userEmail]]]], (error: any, value: any) => {
+        if (error) reject(error);
         resolve(value);
       });
     });
 
-    // 6. Success: Redirect user to their new subdomain login
+    if (existingUsers && existingUsers.length > 0) {
+      return NextResponse.json({ success: false, error: "This email is already registered to a store." }, { status: 400 });
+    }
+
+    // 3. Create the Website Record
+    const websiteId = await new Promise((resolve, reject) => {
+      models.methodCall('execute_kw', [db, uid, password, 'website', 'create', [{
+        'name': storeName,
+        'domain': `${subDomain}.deducia.com`,
+        'theme_id': 1, 
+      }]], (error: any, value: any) => {
+        if (error) reject(error);
+        resolve(value);
+      });
+    });
+
+    // 4. Create the User Account for the Shop Owner
+    const newUserId = await new Promise((resolve, reject) => {
+      models.methodCall('execute_kw', [db, uid, password, 'res.users', 'create', [{
+        'name': `${storeName} Admin`,
+        'login': userEmail,
+        'password': userPassword,
+      }]], (error: any, value: any) => {
+        if (error) reject(error);
+        resolve(value);
+      });
+    });
+
+    // 5. Success
     return NextResponse.json({ 
       success: true, 
       redirectUrl: `https://${subDomain}.deducia.com/web/login` 
@@ -66,9 +73,6 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("Deducia Bridge Error:", error);
-    return NextResponse.json({ 
-      success: false, 
-      error: error.message || "An unexpected error occurred during store creation." 
-    }, { status: 500 });
+    return NextResponse.json({ success: false, error: "An unexpected error occurred." }, { status: 500 });
   }
 }
