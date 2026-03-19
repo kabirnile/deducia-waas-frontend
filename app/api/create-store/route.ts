@@ -3,17 +3,16 @@ const xmlrpc = require('xmlrpc');
 
 export async function POST(req: Request) {
   try {
-    // 1. Extract user data from the signup form
     const { storeName, subDomain } = await req.json();
 
-    // 2. Validate Environment Variables (Vercel Settings)
+    // 2. Validate Environment Variables (Matching your Vercel screenshot!)
     const url = process.env.ODOO_URL;
     const db = process.env.ODOO_DB;
-    const username = process.env.ODOO_ADMIN_USER;
-    const password = process.env.ODOO_ADMIN_PASS;
+    const username = process.env.ODOO_ADMIN_EMAIL;      // <-- Updated
+    const password = process.env.ODOO_ADMIN_PASSWORD;   // <-- Updated
 
     if (!url || !db || !username || !password) {
-      console.error("CRITICAL: Missing Vercel Environment Variables");
+      console.error("CRITICAL: Missing Vercel Environment Variables", { url, db, hasUser: !!username, hasPass: !!password });
       return NextResponse.json({ success: false, error: "Server Configuration Error" }, { status: 500 });
     }
 
@@ -34,7 +33,7 @@ export async function POST(req: Request) {
 
     if (!uid || typeof uid !== 'number') {
       console.error("Authentication failed: UID is invalid");
-      return NextResponse.json({ success: false, error: "Master Server Authentication Failed" }, { status: 401 });
+      return NextResponse.json({ success: false, error: "Master Server Authentication Failed. Check Email/Password." }, { status: 401 });
     }
 
     // 5. STEP 2: Create the Website Record for the User
@@ -48,7 +47,7 @@ export async function POST(req: Request) {
         [{
           'name': storeName,
           'domain': `${subDomain}.deducia.com`,
-          'theme_id': 1, // Default Odoo theme
+          'theme_id': 1, 
         }]
       ], (error: any, value: any) => {
         if (error) {
