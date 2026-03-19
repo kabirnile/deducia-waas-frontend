@@ -41,12 +41,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "This email is already registered to a store." }, { status: 400 });
     }
 
-    // 3. Create the Website Record
+    // 3. Create the Website Record (theme_id removed so the wizard triggers)
     const websiteId = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'website', 'create', [{
         'name': storeName,
-        'domain': `${subDomain}.deducia.com`,
-        'theme_id': 1, 
+        'domain': `${subDomain}.deducia.com`
       }]], (error: any, value: any) => {
         if (error) reject(error);
         resolve(value);
@@ -65,10 +64,10 @@ export async function POST(req: Request) {
       });
     });
 
-    // 5. Success
+    // 5. Success: Redirect straight to the website maker after login
     return NextResponse.json({ 
       success: true, 
-      redirectUrl: `https://${subDomain}.deducia.com/web/login` 
+      redirectUrl: `https://${subDomain}.deducia.com/web/login?redirect=/website/configurator` 
     });
 
   } catch (error: any) {
