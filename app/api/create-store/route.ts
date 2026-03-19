@@ -26,10 +26,10 @@ export async function POST(req: Request) {
     });
 
     if (!uid || typeof uid !== 'number') {
-      return NextResponse.json({ success: false, error: "Master Server Authentication Failed. Check Vercel Password." }, { status: 401 });
+      return NextResponse.json({ success: false, error: "Master Server Authentication Failed." }, { status: 401 });
     }
 
-    // 2. CHECK DATABASE: Does the customer email already exist?
+    // 2. CHECK DATABASE: Duplicate Email Prevention
     const existingUsers: any = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'res.users', 'search', [[['login', '=', userEmail]]]], (error: any, value: any) => {
         if (error) reject(error);
@@ -41,30 +41,64 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "This email is already registered to a store." }, { status: 400 });
     }
 
-    // 3. Create the Website Record (theme_id removed so the wizard triggers)
-    const websiteId = await new Promise((resolve, reject) => {
-      models.methodCall('execute_kw', [db, uid, password, 'website', 'create', [{
+    // 3. ISOLATION: Create a Private Company for the User
+    const companyId = await new Promise((resolve, reject) => {
+      models.methodCall('execute_kw', [db, uid, password, 'res.company', 'create', [{
         'name': storeName,
-        'domain': `${subDomain}.deducia.com`
       }]], (error: any, value: any) => {
         if (error) reject(error);
         resolve(value);
       });
     });
 
-    // 4. Create the User Account for the Shop Owner
+    // 4. Create the Website and Lock it to the new Company
+    const websiteId = await new Promise((resolve, reject) => {
+      models.methodCall('execute_kw', [db, uid, password, 'website', 'create', [{
+        'name': storeName,
+        'domain': `${subDomain}.deducia.com`,
+        'company_id': companyId
+      }]], (error: any, value: any) => {
+        if (error) reject(error);
+        resolve(value);
+      });
+    });
+
+    // 5. PERMISSIONS: Helper function to get correct Odoo Group IDs
+    const getGroupId = async (moduleName: string, xmlId: string) => {
+      const result: any = await new Promise((resolve, reject) => {
+        models.methodCall('execute_kw', [db, uid, password, 'ir.model.data', 'search_read',
+          [[['module', '=', moduleName], ['name', '=', xmlId]]],
+          {'fields': ['res_id']}
+        ], (error: any, value: any) => {
+          if (error) reject(error);
+          resolve(value);
+        });
+      });
+      return result && result.length > 0 ? result[0].res_id : null;
+    };
+
+    // Fetch Internal User, Website Designer, and Sales Admin rights
+    const groupUserId = await getGroupId('base', 'group_user');
+    const groupWebsiteDesignerId = await getGroupId('website', 'group_website_designer');
+    const groupSalesManagerId = await getGroupId('sales_team', 'group_sale_manager');
+    const groupIds = [groupUserId, groupWebsiteDesignerId, groupSalesManagerId].filter(Boolean);
+
+    // 6. Create the User, assign Permissions, and Lock to Company
     const newUserId = await new Promise((resolve, reject) => {
       models.methodCall('execute_kw', [db, uid, password, 'res.users', 'create', [{
         'name': `${storeName} Admin`,
         'login': userEmail,
         'password': userPassword,
+        'company_id': companyId,
+        'company_ids': [[6, 0, [companyId]]], // User can ONLY see this company
+        'groups_id': [[6, 0, groupIds]] // Grants editing rights
       }]], (error: any, value: any) => {
         if (error) reject(error);
         resolve(value);
       });
     });
 
-    // 5. Success: Redirect straight to the website maker after login
+    // 7. Success Redirect to the Configurator Wizard
     return NextResponse.json({ 
       success: true, 
       redirectUrl: `https://${subDomain}.deducia.com/web/login?redirect=/website/configurator` 
